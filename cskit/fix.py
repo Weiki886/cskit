@@ -8,6 +8,7 @@ to match the current top-level config.
 
 from __future__ import annotations
 
+import argparse
 import datetime
 import os
 import pathlib
@@ -16,7 +17,8 @@ import shutil
 import sqlite3
 from dataclasses import dataclass
 
-from .errors import CskitConfigError
+from .errors import CskitConfigError, CskitDataError
+from .threads import open_database
 from .toml_util import read_top_level_keys
 
 
@@ -168,7 +170,7 @@ def sync_threads(db_path, provider, model) -> int:
 
 
 def format_preview(state: FixState, thread_count: int, *, dry_run: bool) -> str:
-    """Describe the write in terms of the two values it sets.
+    """Describe the pending write in terms of the two values it sets.
 
     Only the provider name, model name and row count are ever printed. The rest
     of config.toml — including `experimental_bearer_token` — is never echoed,
@@ -185,7 +187,94 @@ def format_preview(state: FixState, thread_count: int, *, dry_run: bool) -> str:
     if dry_run:
         lines.append("")
         lines.append("✓ 预览完成：未写入任何数据")
-    else:
-        lines.append("")
-        lines.append(f"✓ 已同步 {thread_count} 条会话到 {state.provider} / {state.model}")
     return "\n".join(lines)
+
+
+def format_result(state: FixState, affected: int) -> str:
+    """One line stating what was actually written."""
+    return f"✓ 已同步 {affected} 条会话到 {state.provider} / {state.model}"
+
+
+DEFAULT_BACKUP_DIR = pathlib.Path("~/.codex/.cskit-backups")
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="cskit fix",
+        description=(
+            "切换 Provider 后，把 config.toml 当前选中的 provider/model "
+            "同步到 threads 表，让历史会话重新出现在 Codex 列表中。"
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只显示将要写入的 provider/model 与影响行数，不写入",
+    )
+    parser.add_argument("--yes", action="store_true", help="跳过写入前确认")
+    parser.add_argument(
+        "--codex-home",
+        default=pathlib.Path("~/.codex"),
+        type=pathlib.Path,
+        help="Codex 配置目录（默认：~/.codex）",
+    )
+    parser.add_argument(
+        "--backup-dir",
+        default=DEFAULT_BACKUP_DIR,
+        type=pathlib.Path,
+        help="config.toml 备份目录，须为仓库外绝对路径（默认：~/.codex/.cskit-backups）",
+    )
+    parser.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="不备份 config.toml（本子命令不修改该文件，备份只为可回溯）",
+    )
+    return parser
+
+
+def count_threads(db_path) -> int:
+    """How many rows the write would touch, read through a read-only handle."""
+    connection = open_database(pathlib.Path(db_path))
+    try:
+        return int(connection.execute("SELECT COUNT(*) FROM threads").fetchone()[0])
+    except sqlite3.Error as exc:
+        raise CskitDataError(f"无法统计 threads 行数：{exc}") from exc
+    finally:
+        connection.close()
+
+
+def run(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    codex_home = args.codex_home.expanduser()
+    state = load_fix_state(codex_home / "config.toml", codex_home / "state_5.sqlite")
+
+    thread_count = count_threads(state.db_path)
+    print(format_preview(state, thread_count, dry_run=args.dry_run))
+
+    if args.dry_run:
+        return 0
+
+    if not args.yes:
+        answer = input("\n写入这些改动？[y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
+            print("已取消；未写入任何数据。")
+            return 0
+
+    if not args.no_backup:
+        backup = backup_config(state.config_path, args.backup_dir)
+        print(f"已备份配置：{backup}")
+
+    affected = sync_threads(state.db_path, state.provider, state.model)
+    print()
+    print(format_result(state, affected))
+    return 0
+
+
+def main(argv=None) -> None:
+    import sys
+
+    sys.exit(run(argv))
+
+
+if __name__ == "__main__":
+    main()
