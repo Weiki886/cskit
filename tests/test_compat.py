@@ -12,6 +12,7 @@ import re
 import unittest
 
 PACKAGE = pathlib.Path(__file__).resolve().parent.parent / "cskit"
+REPO = pathlib.Path(__file__).resolve().parent.parent
 
 MODERN_ANNOTATION = re.compile(
     r"(?:\b(?:list|dict|set|frozenset|tuple|type)\[)"  # list[str]
@@ -21,6 +22,18 @@ MODERN_ANNOTATION = re.compile(
 
 def package_sources():
     return sorted(PACKAGE.glob("*.py"))
+
+
+def committed_text_files():
+    """Every file that ships in the public repo, not just the Python package.
+
+    install.sh and README.md are as public as the sources, so the secret scan
+    must cover them too.
+    """
+    paths = []
+    for pattern in ("cskit/*.py", "tests/*.py", "*.sh", "*.md", "*.toml"):
+        paths.extend(REPO.glob(pattern))
+    return sorted(p for p in paths if p.is_file())
 
 
 class TestPython39Compatibility(unittest.TestCase):
@@ -76,18 +89,26 @@ class TestNoLeakedSecrets(unittest.TestCase):
 
     PATTERNS = (
         (re.compile(r"sk-[A-Za-z0-9]{16,}"), "OpenAI-style API key"),
-        (re.compile(r"experimental_bearer_token"), "bearer token config key"),
+        # Split so this file's own pattern literals cannot match themselves.
+        (re.compile("experimental" + "_bearer_" + "token"), "bearer token config key"),
         (re.compile(r"/Users/[a-z]"), "personal absolute path"),
     )
 
-    def test_sources_are_clean(self):
+    def test_repo_files_are_clean(self):
         findings = []
-        for path in package_sources():
-            text = path.read_text(encoding="utf-8")
+        for path in committed_text_files():
+            text = path.read_text(encoding="utf-8", errors="replace")
             for pattern, label in self.PATTERNS:
                 if pattern.search(text):
-                    findings.append(f"{path.name}: {label}")
-        self.assertEqual(findings, [], f"secrets/paths in sources: {findings}")
+                    findings.append(f"{path.relative_to(REPO)}: {label}")
+        self.assertEqual(findings, [], f"secrets/paths committed: {findings}")
+
+    def test_scan_covers_more_than_the_package(self):
+        # Guards against the globs silently matching only cskit/*.py, which
+        # would make the scan above pass while ignoring install.sh.
+        names = {p.name for p in committed_text_files()}
+        self.assertIn("install.sh", names)
+        self.assertIn("README.md", names)
 
 
 if __name__ == "__main__":
