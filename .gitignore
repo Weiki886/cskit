@@ -1,0 +1,5 @@
+cskit/__pycache__/
+.DS_Store
+!tests/fixtures/
+*.bak
+cskit-backups/
