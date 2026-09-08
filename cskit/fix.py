@@ -13,6 +13,7 @@ import os
 import pathlib
 import re
 import shutil
+import sqlite3
 from dataclasses import dataclass
 
 from .errors import CskitConfigError
@@ -127,3 +128,40 @@ def backup_config(config_path, backup_dir) -> pathlib.Path:
     shutil.copy2(config_path, destination)
     os.chmod(destination, 0o600)
     return destination
+
+
+def sync_threads(db_path, provider, model) -> int:
+    """Write the current provider/model into every thread row.
+
+    Deliberately has no WHERE clause: after switching Provider, every thread
+    needs the new value, matching what the shell version did.
+
+    `BEGIN IMMEDIATE` takes the write lock up front. SQLite would already revert
+    this single statement if it failed, so the transaction is not what makes the
+    write atomic; it makes contention deterministic. The Codex desktop app writes
+    to this database continuously, and a deferred transaction only discovers the
+    conflict after starting to write, whereas IMMEDIATE fails before any row is
+    touched and keeps the batch all-or-nothing if it ever grows past one
+    statement.
+    """
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=5)
+        conn.execute("BEGIN IMMEDIATE")
+        cursor = conn.execute(
+            "UPDATE threads SET model_provider = ?, model = ?",
+            (provider, model),
+        )
+        affected = cursor.rowcount
+        conn.commit()
+        return affected
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
