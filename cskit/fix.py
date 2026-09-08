@@ -8,8 +8,11 @@ to match the current top-level config.
 
 from __future__ import annotations
 
+import datetime
+import os
 import pathlib
 import re
+import shutil
 from dataclasses import dataclass
 
 from .errors import CskitConfigError
@@ -81,3 +84,46 @@ def load_fix_state(config_path, db_path) -> FixState:
             "  请在 CC Switch 中重新切换一次该 Provider，让它写入完整配置。"
         )
     return state
+
+
+def _enclosing_git_worktree(path: pathlib.Path):
+    """The nearest ancestor containing `.git`, or None."""
+    for candidate in (path,) + tuple(path.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def backup_config(config_path, backup_dir) -> pathlib.Path:
+    """Copy config.toml aside before writing, as an owner-only file.
+
+    The copy inherits the original's secrets, so two things are enforced rather
+    than assumed: the destination is an absolute path outside any git worktree
+    (a token must not become stageable), and both directory and file are
+    restricted to the owner.
+
+    Each call writes a new timestamped name, so an earlier backup is never
+    silently replaced by a later one.
+    """
+    config_path = pathlib.Path(config_path).expanduser()
+    backup_dir = pathlib.Path(backup_dir).expanduser()
+
+    if not backup_dir.is_absolute():
+        raise CskitConfigError(
+            f"备份目录必须是绝对路径，收到：{backup_dir}"
+        )
+    worktree = _enclosing_git_worktree(backup_dir)
+    if worktree is not None:
+        raise CskitConfigError(
+            f"备份目录位于 git 仓库内（{worktree}），可能把凭据提交上去。\n"
+            "  请改用仓库外的目录，例如 ~/.codex/.cskit-backups"
+        )
+
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(backup_dir, 0o700)
+
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    destination = backup_dir / f"config.toml.{stamp}.bak"
+    shutil.copy2(config_path, destination)
+    os.chmod(destination, 0o600)
+    return destination

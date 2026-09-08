@@ -9,7 +9,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from cskit.errors import CskitConfigError
-from cskit.fix import FixState, load_fix_state, verify_state
+from cskit.fix import FixState, backup_config, load_fix_state, verify_state
 
 
 def _state(**overrides):
@@ -110,6 +110,49 @@ class TestLoadFixState(unittest.TestCase):
         path = pathlib.Path(tempfile.mkdtemp()) / "absent.toml"
         with self.assertRaises(CskitConfigError):
             load_fix_state(path, db_path=pathlib.Path("/tmp/state.sqlite"))
+
+
+class TestBackupConfig(unittest.TestCase):
+    def setUp(self):
+        self.home = pathlib.Path(tempfile.mkdtemp())
+        self.config = self.home / "config.toml"
+        self.config.write_text('model_provider = "custom"\n', encoding="utf-8")
+        self.backup_dir = self.home / ".cskit-backups"
+
+    def test_copies_content_verbatim(self):
+        backup = backup_config(self.config, self.backup_dir)
+        self.assertEqual(
+            backup.read_text(encoding="utf-8"),
+            self.config.read_text(encoding="utf-8"),
+        )
+
+    def test_backup_file_is_owner_read_write_only(self):
+        """config.toml holds a bearer token, so the copy must not be world-readable."""
+        backup = backup_config(self.config, self.backup_dir)
+        self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+
+    def test_backup_directory_is_owner_only(self):
+        backup = backup_config(self.config, self.backup_dir)
+        self.assertEqual(backup.parent.stat().st_mode & 0o777, 0o700)
+
+    def test_rejects_relative_backup_directory(self):
+        with self.assertRaises(CskitConfigError):
+            backup_config(self.config, pathlib.Path("relative-backups"))
+
+    def test_rejects_directory_inside_a_git_worktree(self):
+        """A backup containing a live token must never land where git can stage it."""
+        (self.home / ".git").mkdir()
+        with self.assertRaises(CskitConfigError) as ctx:
+            backup_config(self.config, self.home / "backups")
+        self.assertIn("git", str(ctx.exception).lower())
+
+    def test_does_not_overwrite_an_earlier_backup(self):
+        first = backup_config(self.config, self.backup_dir)
+        self.config.write_text('model_provider = "changed"\n', encoding="utf-8")
+        second = backup_config(self.config, self.backup_dir)
+        self.assertNotEqual(first, second)
+        self.assertIn("custom", first.read_text(encoding="utf-8"))
+        self.assertIn("changed", second.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
