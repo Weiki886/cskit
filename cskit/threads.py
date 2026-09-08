@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -237,3 +240,69 @@ def load_sidebar_project_names(path: Path) -> dict[str, str]:
         if isinstance(project_name, str) and project_name.strip():
             result[thread_id] = project_name.strip()
     return result
+
+
+def format_timestamp(value: int | None) -> str:
+    """Format a millisecond timestamp as a local date/time string."""
+    if not value or value <= 0:
+        return "未知"
+    try:
+        return (
+            datetime.fromtimestamp(value / 1000)
+            .astimezone()
+            .strftime("%Y-%m-%d %H:%M:%S")
+        )
+    except (ValueError, OSError, OverflowError):
+        return "未知"
+
+
+def selection_label(thread: ThreadRecord, duplicate_count: int) -> str:
+    """Format a single thread for the numbered list."""
+    title = re.sub(r"\s+", " ", thread.display_name).strip()
+    if len(title) > 80:
+        title = title[:77] + "…"
+    updated = format_timestamp(thread.updated_at_ms)
+    suffix = f" · {updated}"
+    if duplicate_count > 1:
+        suffix += f" · {thread.id[:8]}"
+    return f"[{thread.project_name}] {title}{suffix}"
+
+
+def print_thread_list(
+    threads: list[ThreadRecord],
+    *,
+    file: Any = None,
+) -> None:
+    """Print a numbered list of threads to a file or stdout."""
+    # Resolved per call, not bound at import, so redirect_stdout and pipes work.
+    out = sys.stdout if file is None else file
+    counts: dict[str, int] = {}
+    for t in threads:
+        counts[t.display_name] = counts.get(t.display_name, 0) + 1
+    print("Codex 侧边栏当前显示的对话：\n", file=out)
+    for index, thread in enumerate(threads, start=1):
+        print(f"{index:>3}. {selection_label(thread, counts[thread.display_name])}", file=out)
+
+
+def choose_thread(
+    threads: list[ThreadRecord],
+    *,
+    prompt_label: str = "导出",
+    file: Any = None,
+    reader: Any = None,
+) -> ThreadRecord:
+    """Interactive selection from a numbered list of threads."""
+    if not threads:
+        raise CskitDataError("没有找到当前未归档的 Codex 对话。")
+    ask = reader if reader is not None else input
+    print_thread_list(threads, file=file)
+    while True:
+        try:
+            value = ask(f"\n输入要{prompt_label}的编号（q 退出）：").strip()
+        except EOFError as exc:
+            raise CskitDataError("没有收到会话编号。") from exc
+        if value.lower() in {"q", "quit", "exit"}:
+            raise KeyboardInterrupt
+        if value.isdigit() and 1 <= int(value) <= len(threads):
+            return threads[int(value) - 1]
+        print(f"请输入 1 到 {len(threads)} 之间的编号。", file=sys.stderr)

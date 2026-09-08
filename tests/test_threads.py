@@ -315,6 +315,202 @@ class TestListThreads(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].id, "user")
 
+    def test_display_name_from_ui_title_beats_db_name(self):
+        from cskit.threads import list_threads
+        conn = sqlite3.connect(str(self.db))
+        conn.execute(
+            "INSERT INTO threads (id, title, rollout_path, name) VALUES (?, ?, ?, ?)",
+            ("t1", "Database Title", "/r/1.jsonl", "Database Name"),
+        )
+        conn.commit(); conn.close()
+        rows = list_threads(self.db, session_titles={"t1": "UI Title"})
+        self.assertEqual(rows[0].display_name, "UI Title")
+
+    def test_full_name_prefers_db_name(self):
+        from cskit.threads import list_threads
+        conn = sqlite3.connect(str(self.db))
+        conn.execute(
+            "INSERT INTO threads (id, title, rollout_path, name) VALUES (?, ?, ?, ?)",
+            ("t1", "DB Title", "/r/1.jsonl", "DB Name"),
+        )
+        conn.commit(); conn.close()
+        rows = list_threads(self.db, session_titles={"t1": "UI Title"})
+        self.assertEqual(rows[0].full_name, "DB Name")
+
+    def test_full_name_prefers_db_name_blank(self):
+        from cskit.threads import list_threads
+        conn = sqlite3.connect(str(self.db))
+        conn.execute(
+            "INSERT INTO threads (id, title, rollout_path, name) VALUES (?, ?, ?, ?)",
+            ("t1", "DB Title", "/r/1.jsonl", ""),
+        )
+        conn.commit(); conn.close()
+        rows = list_threads(self.db, session_titles={"t1": "UI Title"})
+        self.assertEqual(rows[0].full_name, "UI Title")
+
+    def test_recency_column_used_when_present(self):
+        from cskit.threads import list_threads
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("ALTER TABLE threads ADD COLUMN recency_at_ms INTEGER")
+        conn.execute(
+            "INSERT INTO threads (id, title, rollout_path, recency_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?)",
+            ("old", "Old", "/r/o.jsonl", 100, 200),
+        )
+        conn.execute(
+            "INSERT INTO threads (id, title, rollout_path, recency_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?)",
+            ("recent", "Recent", "/r/r.jsonl", 300, 400),
+        )
+        conn.commit(); conn.close()
+        rows = list_threads(self.db)
+        # recency_at_ms DESC: recent first
+        self.assertEqual(rows[0].id, "recent")
+        self.assertEqual(rows[1].id, "old")
+
+
+class TestFormatTimestamp(unittest.TestCase):
+    def test_returns_formatted_string(self):
+        from cskit.threads import format_timestamp
+        # 2026-09-01T12:00:00 UTC+8 = 1725192000000+8h adjustment
+        # Use a timestamp we know the year of
+        result = format_timestamp(1780000000000)
+        self.assertIn("2026", result)
+
+    def test_zero_returns_unknown(self):
+        from cskit.threads import format_timestamp
+        self.assertEqual(format_timestamp(0), "未知")
+        self.assertEqual(format_timestamp(-1), "未知")
+
+    def test_none_returns_unknown(self):
+        from cskit.threads import format_timestamp
+        self.assertEqual(format_timestamp(None), "未知")
+
+
+class TestSelectionLabel(unittest.TestCase):
+    def setUp(self):
+        from cskit.threads import ThreadRecord
+        self.thread = ThreadRecord(
+            id="t1", display_name="Hello World", full_name="Hello World",
+            rollout_path=pathlib.Path("/r/t.jsonl"),
+            project_name="TestProject", updated_at_ms=1780000000000,
+        )
+
+    def test_returns_expected_format(self):
+        from cskit.threads import selection_label
+        label = selection_label(self.thread, 1)
+        self.assertIn("[TestProject]", label)
+        self.assertIn("Hello World", label)
+
+    def test_truncates_long_titles(self):
+        from cskit.threads import selection_label
+        from cskit.threads import ThreadRecord
+        long = ThreadRecord(
+            id="t2", display_name="A" * 100, full_name="",
+            rollout_path=pathlib.Path("/r/t.jsonl"),
+            project_name="P", updated_at_ms=1780000000000,
+        )
+        label = selection_label(long, 1)
+        # should be truncated to 77 + "…"
+        self.assertIn("…", label)
+        self.assertLess(len(label.split("]")[1].strip().split("·")[0].strip()), 85)
+
+    def test_duplicate_count_adds_id_suffix(self):
+        from cskit.threads import selection_label
+        label = selection_label(self.thread, 2)
+        self.assertIn("t1", label)
+
+
+class TestPrintThreadList(unittest.TestCase):
+    def test_prints_numbered_list(self):
+        from cskit.threads import ThreadRecord, selection_label, print_thread_list
+        threads = [
+            ThreadRecord(id="t1", display_name="First", full_name="",
+                         rollout_path=pathlib.Path("/r/1.jsonl"),
+                         project_name="P", updated_at_ms=1780000000000),
+            ThreadRecord(id="t2", display_name="Second", full_name="",
+                         rollout_path=pathlib.Path("/r/2.jsonl"),
+                         project_name="Q", updated_at_ms=1780000000000),
+        ]
+        import io
+        buf = io.StringIO()
+        print_thread_list(threads, file=buf)
+        output = buf.getvalue()
+        self.assertIn("1.", output)
+        self.assertIn("2.", output)
+        self.assertIn("First", output)
+        self.assertIn("Second", output)
+
+
+class TestChooseThread(unittest.TestCase):
+    def test_raises_on_empty(self):
+        from cskit.threads import choose_thread
+        with self.assertRaises(CskitDataError):
+            choose_thread([], prompt_label="测试")
+
+    def test_returns_selected_thread(self):
+        from cskit.threads import ThreadRecord, choose_thread
+        import io
+        thread = ThreadRecord(id="t1", display_name="Test", full_name="",
+                              rollout_path=pathlib.Path("/r/1.jsonl"),
+                              project_name="P", updated_at_ms=1780000000000)
+        buf = io.StringIO()
+        result = choose_thread(
+            [thread], prompt_label="测试", file=buf, reader=lambda _: "1"
+        )
+        self.assertEqual(result.id, "t1")
+
+    def test_reprompts_until_valid_index(self):
+        from cskit.threads import ThreadRecord, choose_thread
+        import io
+        threads = [
+            ThreadRecord(id="t1", display_name="One", full_name="",
+                         rollout_path=pathlib.Path("/r/1.jsonl"),
+                         project_name="P", updated_at_ms=1780000000000),
+            ThreadRecord(id="t2", display_name="Two", full_name="",
+                         rollout_path=pathlib.Path("/r/2.jsonl"),
+                         project_name="P", updated_at_ms=1780000000000),
+        ]
+        answers = iter(["0", "99", "abc", "2"])
+        result = choose_thread(
+            threads, prompt_label="测试", file=io.StringIO(),
+            reader=lambda _: next(answers),
+        )
+        self.assertEqual(result.id, "t2")
+
+    def test_quit_raises_keyboard_interrupt(self):
+        from cskit.threads import ThreadRecord, choose_thread
+        import io
+        thread = ThreadRecord(id="t1", display_name="One", full_name="",
+                              rollout_path=pathlib.Path("/r/1.jsonl"),
+                              project_name="P", updated_at_ms=1780000000000)
+        with self.assertRaises(KeyboardInterrupt):
+            choose_thread([thread], prompt_label="测试", file=io.StringIO(),
+                          reader=lambda _: "q")
+
+    def test_prompt_label_appears_in_question(self):
+        from cskit.threads import ThreadRecord, choose_thread
+        import io
+        thread = ThreadRecord(id="t1", display_name="One", full_name="",
+                              rollout_path=pathlib.Path("/r/1.jsonl"),
+                              project_name="P", updated_at_ms=1780000000000)
+        seen = []
+        def reader(prompt):
+            seen.append(prompt)
+            return "1"
+        choose_thread([thread], prompt_label="克隆", file=io.StringIO(), reader=reader)
+        self.assertIn("克隆", seen[0])
+
+    def test_eof_raises_data_error(self):
+        from cskit.threads import ThreadRecord, choose_thread
+        import io
+        thread = ThreadRecord(id="t1", display_name="One", full_name="",
+                              rollout_path=pathlib.Path("/r/1.jsonl"),
+                              project_name="P", updated_at_ms=1780000000000)
+        def reader(_):
+            raise EOFError
+        with self.assertRaises(CskitDataError):
+            choose_thread([thread], prompt_label="测试", file=io.StringIO(),
+                          reader=reader)
+
 
 if __name__ == "__main__":
     unittest.main()
