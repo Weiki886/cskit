@@ -1,4 +1,4 @@
-cskit/__pycache__/
+__pycache__/
 .DS_Store
 !tests/fixtures/
 *.bak
