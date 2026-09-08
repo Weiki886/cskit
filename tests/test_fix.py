@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import pathlib
+import re
 import sqlite3
 import sys
 import tempfile
@@ -10,7 +13,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from cskit.errors import CskitConfigError
-from cskit.fix import FixState, backup_config, format_preview, load_fix_state, sync_threads, verify_state
+from cskit.fix import FixState, backup_config, build_parser, format_preview, format_result, load_fix_state, run, sync_threads, verify_state
 
 
 def _state(**overrides):
@@ -245,9 +248,17 @@ class TestFormatPreview(unittest.TestCase):
         text = format_preview(self.state, 42, dry_run=True)
         self.assertIn("预览", text)
 
-    def test_live_run_banner(self):
+    def test_live_preview_has_no_completion_banner(self):
+        """Before writing, nothing may claim the write already happened."""
         text = format_preview(self.state, 42, dry_run=False)
+        self.assertNotIn("✓", text)
+
+    def test_result_line_reports_what_was_written(self):
+        text = format_result(self.state, 42)
         self.assertIn("✓", text)
+        self.assertIn("42", text)
+        self.assertIn("custom", text)
+        self.assertIn("ark-code-latest", text)
 
     def test_no_token_leak(self):
         """Even if the provider or model were a token — they aren't, but the
@@ -257,6 +268,127 @@ class TestFormatPreview(unittest.TestCase):
         self.assertNotIn("experimental_bearer_token", text)
         self.assertNotIn("api_key", text)
         self.assertNotIn("base_url", text)
+
+
+class TestRunIsolation(unittest.TestCase):
+    """`fix` is the only writing subcommand, so the suite must never be able to
+    touch the developer's own Codex data. This locks the two escape routes."""
+
+    def test_default_paths_point_at_the_real_codex_home(self):
+        args = build_parser().parse_args([])
+        self.assertEqual(args.codex_home.expanduser(), pathlib.Path.home() / ".codex")
+        self.assertTrue(str(args.backup_dir).startswith("~/.codex"))
+
+    def test_every_run_invocation_in_this_file_is_sandboxed(self):
+        """Every real invocation must pass --codex-home, and pass either
+        --no-backup or a --backup-dir, or it would write to the real ~/.codex."""
+        source = pathlib.Path(__file__).read_text(encoding="utf-8")
+        calls = re.findall(r"run\(\[\s*([\"'].*?)\]\)", source, re.DOTALL)
+        self.assertGreater(len(calls), 0)
+        for call in calls:
+            self.assertIn("--codex-home", call)
+            if "--dry-run" not in call:
+                self.assertTrue(
+                    "--no-backup" in call or "--backup-dir" in call,
+                    f"未沙箱化的写入调用：{call.strip()}",
+                )
+
+
+class TestRun(unittest.TestCase):
+    def _setup(self, config_text, rows=None, backup_dir=None):
+        d = pathlib.Path(tempfile.mkdtemp())
+        config = d / "config.toml"
+        config.write_text(config_text, encoding="utf-8")
+        db = d / "state_5.sqlite"
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL, model TEXT)")
+        if rows:
+            for i, (mp, m) in enumerate(rows):
+                conn.execute("INSERT INTO threads (id, model_provider, model) VALUES (?, ?, ?)", (f"t{i}", mp, m))
+        conn.commit()
+        conn.close()
+        if backup_dir is not None:
+            return config, db, backup_dir
+        return config, db
+
+    def test_dry_run_does_not_mutate(self):
+        config, db = self._setup(
+            'model_provider = "custom"\nmodel = "gpt-4"\n\n[model_providers.custom]\nname = "t"\n',
+            [("old", "old")],
+        )
+        code = run(["--codex-home", str(config.parent), "--dry-run", "--no-backup"])
+        self.assertEqual(code, 0)
+        conn = sqlite3.connect(str(db))
+        row = conn.execute("SELECT model_provider, model FROM threads").fetchone()
+        conn.close()
+        self.assertEqual(row, ("old", "old"))
+
+    def test_yes_skips_confirmation(self):
+        config, db, bd = self._setup(
+            'model_provider = "custom"\nmodel = "gpt-4"\n\n[model_providers.custom]\nname = "t"\n',
+            [("old", "old")],
+            backup_dir=pathlib.Path(tempfile.mkdtemp()),
+        )
+        code = run(["--codex-home", str(config.parent), "--backup-dir", str(bd), "--yes"])
+        self.assertEqual(code, 0)
+        conn = sqlite3.connect(str(db))
+        row = conn.execute("SELECT model_provider, model FROM threads").fetchone()
+        conn.close()
+        self.assertEqual(row, ("custom", "gpt-4"))
+
+    def test_errors_on_missing_config(self):
+        with self.assertRaises(CskitConfigError):
+            run(["--codex-home", "/nonexistent", "--no-backup"])
+
+    def test_missing_config_exits_one_through_the_cli(self):
+        from cskit.__main__ import main
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            self.assertEqual(main(["fix", "--codex-home", "/nonexistent"]), 1)
+
+    def test_creates_a_backup_before_writing(self):
+        config, _ = self._setup(
+            'model_provider = "custom"\nmodel = "gpt-4"\n\n[model_providers.custom]\nname = "t"\n',
+            [("old", "old")],
+        )
+        backups = config.parent / "backups-out"
+        code = run([
+            "--codex-home", str(config.parent),
+            "--backup-dir", str(backups),
+            "--yes",
+        ])
+        self.assertEqual(code, 0)
+        made = list(backups.glob("config.toml.*.bak"))
+        self.assertEqual(len(made), 1)
+        self.assertEqual(made[0].read_text(encoding="utf-8"), config.read_text(encoding="utf-8"))
+
+    def test_dry_run_creates_no_backup(self):
+        config, _ = self._setup(
+            'model_provider = "custom"\nmodel = "gpt-4"\n\n[model_providers.custom]\nname = "t"\n',
+            [("old", "old")],
+        )
+        backups = config.parent / "backups-out"
+        run([
+            "--codex-home", str(config.parent),
+            "--backup-dir", str(backups),
+            "--dry-run",
+        ])
+        self.assertFalse(backups.exists())
+
+    def test_errors_on_missing_provider_section(self):
+        config, _ = self._setup(
+            'model_provider = "custom"\nmodel = "gpt-4"\n',  # no [model_providers.custom]
+        )
+        with self.assertRaises(CskitConfigError) as ctx:
+            run(["--codex-home", str(config.parent), "--no-backup"])
+        self.assertIn("model_providers.custom", str(ctx.exception))
+
+    def test_build_parser_accepts_known_flags(self):
+        parser = build_parser()
+        args = parser.parse_args(["--dry-run", "--yes"])
+        self.assertTrue(args.dry_run)
+        self.assertTrue(args.yes)
 
 
 if __name__ == "__main__":
