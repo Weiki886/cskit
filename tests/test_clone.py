@@ -182,6 +182,25 @@ class TestRenderContext(unittest.TestCase):
         out = render_context("多\n行\r标题", self.messages, 0)
         self.assertIn("多 行 标题", out)
 
+    def test_oversized_final_message_yields_empty_context(self):
+        """Known rough edge, preserved from the original implementation.
+
+        The budget loop drops from the front. If the newest message alone still
+        exceeds the budget, it is dropped too and the result is empty rather
+        than a partial message. Callers must treat "" as "nothing to migrate"
+        and can raise --max-chars (or pass 0) to migrate everything.
+        """
+        messages = [{"role": "user", "text": "短"}] * 5 + [
+            {"role": "assistant", "text": "长" * 4000}
+        ]
+        self.assertEqual(render_context("t", messages, 3000), "")
+        # A budget above the oversized message renders normally again.
+        self.assertNotEqual(render_context("t", messages, 6000), "")
+
+    def test_budget_below_header_floor_yields_empty_context(self):
+        # Header + footer alone exceed a tiny budget, so nothing can fit.
+        self.assertEqual(render_context("t", self.messages, 50), "")
+
 
 class TestThreadStartParams(unittest.TestCase):
     def test_context_becomes_developer_instructions(self):
