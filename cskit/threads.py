@@ -2,10 +2,47 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .errors import CskitDataError
+
+
+# The union of what exportcode and clonecode each required. Callers that only
+# need a subset pass `required_columns` so their error behaviour on older Codex
+# schemas stays identical to the standalone scripts.
+UNION_REQUIRED_COLUMNS = frozenset({
+    "id", "title", "cwd", "model_provider", "model", "history_mode",
+    "archived", "thread_source", "updated_at_ms", "rollout_path",
+})
+
+EXPORT_REQUIRED_COLUMNS = frozenset({
+    "id", "rollout_path", "title", "archived", "thread_source",
+})
+
+
+@dataclass(frozen=True)
+class ThreadRecord:
+    """A user-owned Codex thread as shown in the desktop sidebar.
+
+    `display_name` is what the list UI shows; `full_name` prefers the name
+    Codex itself stores, because the session index copy can be shortened for
+    display and `title` holds a raw first-message dump.
+    """
+
+    id: str
+    display_name: str
+    full_name: str
+    rollout_path: Path
+    project_name: str = "独立任务"
+    created_at_ms: int = 0
+    updated_at_ms: int = 0
+    cwd: str = ""
+    model_provider: str = ""
+    model: str = ""
+    history_mode: str = ""
+    row: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
 
 def open_database(path: Path) -> sqlite3.Connection:
@@ -21,6 +58,122 @@ def open_database(path: Path) -> sqlite3.Connection:
         return connection
     except sqlite3.Error as exc:
         raise CskitDataError(f"无法以只读模式打开数据库：{exc}") from exc
+
+
+def list_threads(
+    state_db: Path,
+    *,
+    session_titles: dict[str, str] | None = None,
+    project_names: dict[str, str] | None = None,
+    sidebar_only: bool = False,
+    max_per_project: int | None = None,
+    required_columns: frozenset[str] | set[str] | None = None,
+) -> list[ThreadRecord]:
+    """List user-owned, non-archived threads without reading rollout history."""
+    required = set(
+        UNION_REQUIRED_COLUMNS if required_columns is None else required_columns
+    )
+    connection = open_database(state_db)
+    try:
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(threads)").fetchall()
+        }
+        missing = required - columns
+        if missing:
+            raise CskitDataError(
+                "当前 Codex threads 表缺少必要字段：" + ", ".join(sorted(missing))
+            )
+
+        # Optional columns differ across Codex versions; degrade instead of failing.
+        name_expression = "name" if "name" in columns else "NULL"
+        preview_expression = "preview" if "preview" in columns else "NULL"
+        created_expression = (
+            "COALESCE(NULLIF(created_at_ms, 0), created_at * 1000)"
+            if "created_at_ms" in columns
+            else "created_at * 1000" if "created_at" in columns
+            else "0"
+        )
+        updated_expression = (
+            "updated_at_ms" if "updated_at_ms" in columns
+            else "updated_at * 1000" if "updated_at" in columns
+            else "0"
+        )
+        recency_expression = (
+            "recency_at_ms" if "recency_at_ms" in columns else updated_expression
+        )
+        # Columns only clonecode required: select NULL when a caller passed a
+        # narrower required_columns and the schema lacks them.
+        selected_optional = ", ".join(
+            f"{name}" if name in columns else f"NULL AS {name}"
+            for name in ("cwd", "model_provider", "model", "history_mode")
+        )
+        query = f"""
+            SELECT
+                id, rollout_path,
+                {name_expression} AS db_name,
+                title AS db_title,
+                {preview_expression} AS db_preview,
+                {selected_optional},
+                {created_expression} AS created_ms,
+                {updated_expression} AS updated_ms,
+                {recency_expression} AS recency_ms
+            FROM threads
+            WHERE archived = 0 AND thread_source = 'user'
+            ORDER BY recency_ms DESC, updated_ms DESC
+        """
+        try:
+            rows = connection.execute(query).fetchall()
+        except sqlite3.Error as exc:
+            raise CskitDataError(f"读取会话列表失败：{exc}") from exc
+    finally:
+        connection.close()
+
+    ui_titles = session_titles or {}
+    ui_projects = project_names or {}
+    project_counts: dict[str, int] = {}
+    threads: list[ThreadRecord] = []
+    for row in rows:
+        thread_id = str(row["id"])
+        db_name = str(row["db_name"] or "").strip()
+        # Automated top-level tasks can be thread_source='user' yet never enter
+        # the desktop index; a current DB name also keeps a freshly-created task
+        # visible before its index entry is flushed.
+        if sidebar_only and thread_id not in ui_titles and not db_name:
+            continue
+        display_name = str(
+            ui_titles.get(thread_id)
+            or db_name
+            or row["db_title"]
+            or row["db_preview"]
+            or "未命名对话"
+        ).strip() or "未命名对话"
+        full_name = (
+            db_name or str(ui_titles.get(thread_id) or "").strip() or display_name
+        )
+        project_name = ui_projects.get(thread_id, "独立任务")
+        if max_per_project is not None:
+            count = project_counts.get(project_name, 0)
+            if count >= max_per_project:
+                continue
+            project_counts[project_name] = count + 1
+        threads.append(
+            ThreadRecord(
+                id=thread_id,
+                display_name=display_name,
+                full_name=full_name,
+                rollout_path=Path(str(row["rollout_path"] or "")),
+                project_name=project_name,
+                created_at_ms=int(row["created_ms"] or 0),
+                updated_at_ms=int(row["updated_ms"] or 0),
+                cwd=str(row["cwd"] or ""),
+                model_provider=str(row["model_provider"] or ""),
+                model=str(row["model"] or ""),
+                history_mode=str(row["history_mode"] or ""),
+                row=dict(row),
+            )
+        )
+    return threads
 
 
 def load_session_titles(path: Path) -> dict[str, str]:

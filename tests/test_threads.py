@@ -159,5 +159,162 @@ class TestLoadSidebarProjectNames(unittest.TestCase):
         self.assertEqual(load_sidebar_project_names(self.state), {})
 
 
+class TestListThreads(unittest.TestCase):
+    """list_threads is the union of exportcode's list_active_threads and
+    clonecode's list_threads, parameterized by required_columns."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.db = self.tmp / "state.sqlite"
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("""
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                rollout_path TEXT,
+                archived INTEGER DEFAULT 0,
+                thread_source TEXT DEFAULT 'user',
+                cwd TEXT DEFAULT '',
+                model_provider TEXT DEFAULT '',
+                model TEXT DEFAULT '',
+                history_mode TEXT DEFAULT '',
+                updated_at_ms INTEGER DEFAULT 0,
+                name TEXT DEFAULT ''
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_requires_columns_by_default(self):
+        from cskit.threads import list_threads
+        # Drop a column that's in the union set
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("ALTER TABLE threads DROP COLUMN model_provider")
+        conn.commit()
+        conn.close()
+        with self.assertRaises(CskitDataError) as ctx:
+            list_threads(self.db)
+        self.assertIn("model_provider", str(ctx.exception))
+
+    def test_required_columns_parameter_can_override(self):
+        from cskit.threads import list_threads
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("ALTER TABLE threads DROP COLUMN model_provider")
+        conn.commit()
+        conn.close()
+        # With a smaller required set, it should pass
+        rows = list_threads(
+            self.db,
+            required_columns={"id", "rollout_path", "title", "archived", "thread_source"},
+        )
+        self.assertEqual(rows, [])
+
+    def test_returns_thread_records_with_display_name_fallback(self):
+        from cskit.threads import list_threads, ThreadRecord
+        conn = sqlite3.connect(str(self.db))
+        conn.execute(
+            "INSERT INTO threads (id, title, rollout_path, name) VALUES (?, ?, ?, ?)",
+            ("t1", "fallback title", "/r/1.jsonl", "My Name"),
+        )
+        conn.commit()
+        conn.close()
+        rows = list_threads(self.db)
+        self.assertEqual(len(rows), 1)
+        self.assertIsInstance(rows[0], ThreadRecord)
+        # name > title, so display_name should be "My Name"
+        self.assertEqual(rows[0].display_name, "My Name")
+
+    def test_display_name_fallback_chain(self):
+        from cskit.threads import list_threads
+        conn = sqlite3.connect(str(self.db))
+        conn.execute(
+            "INSERT INTO threads (id, title, rollout_path) VALUES (?, ?, ?)",
+            ("t2", "仅标题", "/r/2.jsonl"),
+        )
+        conn.commit()
+        conn.close()
+        rows = list_threads(self.db)
+        self.assertEqual(rows[0].display_name, "仅标题")
+
+    def test_display_name_falls_back_to_unnamed(self):
+        from cskit.threads import list_threads
+        conn = sqlite3.connect(str(self.db))
+        conn.execute(
+            "INSERT INTO threads (id, rollout_path, title) VALUES (?, ?, ?)",
+            ("t3", "/r/3.jsonl", ""),
+        )
+        conn.commit()
+        conn.close()
+        rows = list_threads(self.db)
+        self.assertEqual(rows[0].display_name, "未命名对话")
+
+    def test_sidebar_only_filters_threads_not_in_titles(self):
+        from cskit.threads import list_threads
+        conn = sqlite3.connect(str(self.db))
+        conn.execute(
+            "INSERT INTO threads (id, title, rollout_path, name) VALUES (?, ?, ?, ?)",
+            ("t1", "in sidebar", "/r/1.jsonl", "Visible"),
+        )
+        conn.execute(
+            "INSERT INTO threads (id, title, rollout_path, name) VALUES (?, ?, ?, ?)",
+            ("t2", "no name no index", "/r/2.jsonl", ""),
+        )
+        conn.commit()
+        conn.close()
+        rows = list_threads(self.db, sidebar_only=True, session_titles={"t1": "Visible"})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].id, "t1")
+
+    def test_max_per_project_limits(self):
+        from cskit.threads import list_threads
+        conn = sqlite3.connect(str(self.db))
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO threads (id, title, rollout_path) VALUES (?, ?, ?)",
+                (f"t{i}", f"Thread {i}", f"/r/{i}.jsonl"),
+            )
+        conn.commit()
+        conn.close()
+        rows = list_threads(self.db, max_per_project=2)
+        self.assertEqual(len(rows), 2)
+
+    def test_archived_threads_excluded(self):
+        from cskit.threads import list_threads
+        conn = sqlite3.connect(str(self.db))
+        conn.execute(
+            "INSERT INTO threads (id, title, rollout_path) VALUES (?, ?, ?)",
+            ("active", "Active", "/r/a.jsonl"),
+        )
+        conn.execute(
+            "INSERT INTO threads (id, title, rollout_path, archived) VALUES (?, ?, ?, ?)",
+            ("arch", "Archived", "/r/arch.jsonl", 1),
+        )
+        conn.commit()
+        conn.close()
+        rows = list_threads(self.db)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].id, "active")
+
+    def test_non_user_threads_excluded(self):
+        from cskit.threads import list_threads
+        conn = sqlite3.connect(str(self.db))
+        conn.execute(
+            "INSERT INTO threads (id, title, rollout_path, thread_source) VALUES (?, ?, ?, ?)",
+            ("user", "User", "/r/u.jsonl", "user"),
+        )
+        conn.execute(
+            "INSERT INTO threads (id, title, rollout_path, thread_source) VALUES (?, ?, ?, ?)",
+            ("guard", "Guard", "/r/g.jsonl", "guardian"),
+        )
+        conn.commit()
+        conn.close()
+        rows = list_threads(self.db)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].id, "user")
+
+
 if __name__ == "__main__":
     unittest.main()
