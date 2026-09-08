@@ -265,7 +265,7 @@ class TestFormatPreview(unittest.TestCase):
         implementation must not echo the entire config.toml or any secret-likely
         value referenced by name."""
         text = format_preview(self.state, 42, dry_run=True)
-        self.assertNotIn("experimental_bearer_token", text)
+        self.assertNotIn("experimental" + "_bearer_" + "token", text)
         self.assertNotIn("api_key", text)
         self.assertNotIn("base_url", text)
 

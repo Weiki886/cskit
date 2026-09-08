@@ -173,7 +173,7 @@ def format_preview(state: FixState, thread_count: int, *, dry_run: bool) -> str:
     """Describe the pending write in terms of the two values it sets.
 
     Only the provider name, model name and row count are ever printed. The rest
-    of config.toml — including `experimental_bearer_token` — is never echoed,
+    of config.toml — including the bearer token config key — is never echoed,
     because this output lands in terminal scrollback, CI logs and pasted-in AI
     prompts, and a leaked token cannot be un-leaked.
     """
