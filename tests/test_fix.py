@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -9,7 +10,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from cskit.errors import CskitConfigError
-from cskit.fix import FixState, backup_config, load_fix_state, verify_state
+from cskit.fix import FixState, backup_config, load_fix_state, sync_threads, verify_state
 
 
 def _state(**overrides):
@@ -153,6 +154,76 @@ class TestBackupConfig(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertIn("custom", first.read_text(encoding="utf-8"))
         self.assertIn("changed", second.read_text(encoding="utf-8"))
+
+
+class TestSyncThreads(unittest.TestCase):
+    def _db(self, rows):
+        d = pathlib.Path(tempfile.mkdtemp())
+        db = d / "state.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL, model TEXT)"
+        )
+        for i, (mp, m) in enumerate(rows):
+            conn.execute("INSERT INTO threads (id, model_provider, model) VALUES (?, ?, ?)", (f"t{i}", mp, m))
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_updates_all_rows(self):
+        db = self._db([("old", "old"), ("other", "other")])
+        affected = sync_threads(db, "new", "new")
+        self.assertEqual(affected, 2)
+        conn = sqlite3.connect(str(db))
+        rows = conn.execute("SELECT model_provider, model FROM threads").fetchall()
+        conn.close()
+        self.assertEqual(rows, [("new", "new"), ("new", "new")])
+
+    def test_uses_parameterized_query(self):
+        db = self._db([("old", "old")])
+        sync_threads(db, "custom", "o'brien-model")
+        conn = sqlite3.connect(str(db))
+        row = conn.execute("SELECT model_provider, model FROM threads").fetchone()
+        conn.close()
+        self.assertEqual(row, ("custom", "o'brien-model"))
+
+    def test_failed_write_leaves_every_row_untouched(self):
+        """The write is all-or-nothing: one rejected row reverts the whole batch.
+
+        A trigger aborts on the third row, so the update fails after the first
+        two were already rewritten. Note this test does not discriminate the
+        explicit BEGIN IMMEDIATE: SQLite reverts a single failed statement on its
+        own, verified separately. It guards the observable contract, so it would
+        catch a future refactor that splits the write into several statements.
+        """
+        db = self._db([("old", "old"), ("old", "old"), ("old", "old")])
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TRIGGER reject_one BEFORE UPDATE ON threads "
+            "WHEN NEW.id = 't2' BEGIN SELECT RAISE(ABORT, 'boom'); END"
+        )
+        conn.commit()
+        conn.close()
+
+        with self.assertRaises(sqlite3.Error):
+            sync_threads(db, "new", "new")
+
+        conn = sqlite3.connect(str(db))
+        rows = conn.execute("SELECT model_provider, model FROM threads").fetchall()
+        conn.close()
+        self.assertEqual(rows, [("old", "old"), ("old", "old"), ("old", "old")])
+
+    def test_missing_threads_table_raises(self):
+        d = pathlib.Path(tempfile.mkdtemp())
+        db = d / "empty.db"
+        sqlite3.connect(str(db)).close()
+        with self.assertRaises(sqlite3.Error):
+            sync_threads(db, "new", "new")
+
+    def test_empty_db_returns_zero(self):
+        db = self._db([])
+        affected = sync_threads(db, "new", "new")
+        self.assertEqual(affected, 0)
 
 
 if __name__ == "__main__":
