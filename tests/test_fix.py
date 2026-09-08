@@ -3,12 +3,13 @@ from __future__ import annotations
 import os
 import pathlib
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from cskit.errors import CskitConfigError
-from cskit.fix import FixState, verify_state
+from cskit.fix import FixState, load_fix_state, verify_state
 
 
 def _state(**overrides):
@@ -43,6 +44,72 @@ class TestFixState(unittest.TestCase):
         # Must name `model`, not be the model_provider message with a substring hit.
         self.assertIn("model", message)
         self.assertNotIn("model_provider", message)
+
+
+class TestLoadFixState(unittest.TestCase):
+    def _config(self, text):
+        path = pathlib.Path(tempfile.mkdtemp()) / "config.toml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_reads_top_level_provider_and_model(self):
+        path = self._config(
+            'model_provider = "custom"\n'
+            'model = "ark-code-latest"\n'
+            "\n"
+            "[model_providers.custom]\n"
+            'name = "ark"\n'
+        )
+        state = load_fix_state(path, db_path=pathlib.Path("/tmp/state.sqlite"))
+        self.assertEqual(state.provider, "custom")
+        self.assertEqual(state.model, "ark-code-latest")
+        self.assertEqual(state.config_path, path)
+
+    def test_section_scoped_key_does_not_win_over_top_level(self):
+        """Regression: awk's `exit` took the first line match, ignoring scope."""
+        path = self._config(
+            "[model_providers.foo]\n"
+            'model = "WRONG-from-section"\n'
+            'model_provider = "WRONG-provider"\n'
+        )
+        with self.assertRaises(CskitConfigError):
+            load_fix_state(path, db_path=pathlib.Path("/tmp/state.sqlite"))
+
+    def test_rejects_missing_provider_section(self):
+        """Plan A: never append a guessed provider template."""
+        path = self._config(
+            'model_provider = "custom"\nmodel = "ark-code-latest"\n'
+        )
+        with self.assertRaises(CskitConfigError) as ctx:
+            load_fix_state(path, db_path=pathlib.Path("/tmp/state.sqlite"))
+        self.assertIn("model_providers.custom", str(ctx.exception))
+
+    def test_provider_section_may_carry_extra_whitespace(self):
+        path = self._config(
+            'model_provider = "custom"\n'
+            'model = "ark-code-latest"\n'
+            "\n"
+            "  [model_providers.custom]  \n"
+            'name = "ark"\n'
+        )
+        state = load_fix_state(path, db_path=pathlib.Path("/tmp/state.sqlite"))
+        self.assertEqual(state.provider, "custom")
+
+    def test_quoted_provider_section_header_is_accepted(self):
+        path = self._config(
+            'model_provider = "cc-switch-official"\n'
+            'model = "gpt-5.6-sol"\n'
+            "\n"
+            '[model_providers."cc-switch-official"]\n'
+            'name = "OpenAI"\n'
+        )
+        state = load_fix_state(path, db_path=pathlib.Path("/tmp/state.sqlite"))
+        self.assertEqual(state.provider, "cc-switch-official")
+
+    def test_missing_config_file_raises(self):
+        path = pathlib.Path(tempfile.mkdtemp()) / "absent.toml"
+        with self.assertRaises(CskitConfigError):
+            load_fix_state(path, db_path=pathlib.Path("/tmp/state.sqlite"))
 
 
 if __name__ == "__main__":
