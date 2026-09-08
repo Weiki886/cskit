@@ -165,3 +165,27 @@ def sync_threads(db_path, provider, model) -> int:
             conn.close()
         except Exception:
             pass
+
+
+def format_preview(state: FixState, thread_count: int, *, dry_run: bool) -> str:
+    """Describe the write in terms of the two values it sets.
+
+    Only the provider name, model name and row count are ever printed. The rest
+    of config.toml — including `experimental_bearer_token` — is never echoed,
+    because this output lands in terminal scrollback, CI logs and pasted-in AI
+    prompts, and a leaked token cannot be un-leaked.
+    """
+    lines = [
+        f"Provider：{state.provider}",
+        f"模型：{state.model}",
+        f"影响会话：{thread_count} 条（threads 表全部行）",
+        f"配置来源：{state.config_path}",
+        f"数据库：{state.db_path}",
+    ]
+    if dry_run:
+        lines.append("")
+        lines.append("✓ 预览完成：未写入任何数据")
+    else:
+        lines.append("")
+        lines.append(f"✓ 已同步 {thread_count} 条会话到 {state.provider} / {state.model}")
+    return "\n".join(lines)

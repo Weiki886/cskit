@@ -10,7 +10,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from cskit.errors import CskitConfigError
-from cskit.fix import FixState, backup_config, load_fix_state, sync_threads, verify_state
+from cskit.fix import FixState, backup_config, format_preview, load_fix_state, sync_threads, verify_state
 
 
 def _state(**overrides):
@@ -224,6 +224,39 @@ class TestSyncThreads(unittest.TestCase):
         db = self._db([])
         affected = sync_threads(db, "new", "new")
         self.assertEqual(affected, 0)
+
+
+class TestFormatPreview(unittest.TestCase):
+    def setUp(self):
+        self.state = FixState(provider="custom", model="ark-code-latest",
+                               config_path=pathlib.Path("/tmp/c.toml"),
+                               db_path=pathlib.Path("/tmp/s.db"))
+
+    def test_contains_provider_and_model(self):
+        text = format_preview(self.state, 42, dry_run=True)
+        self.assertIn("custom", text)
+        self.assertIn("ark-code-latest", text)
+
+    def test_contains_thread_count(self):
+        text = format_preview(self.state, 42, dry_run=True)
+        self.assertIn("42", text)
+
+    def test_dry_run_banner(self):
+        text = format_preview(self.state, 42, dry_run=True)
+        self.assertIn("预览", text)
+
+    def test_live_run_banner(self):
+        text = format_preview(self.state, 42, dry_run=False)
+        self.assertIn("✓", text)
+
+    def test_no_token_leak(self):
+        """Even if the provider or model were a token — they aren't, but the
+        implementation must not echo the entire config.toml or any secret-likely
+        value referenced by name."""
+        text = format_preview(self.state, 42, dry_run=True)
+        self.assertNotIn("experimental_bearer_token", text)
+        self.assertNotIn("api_key", text)
+        self.assertNotIn("base_url", text)
 
 
 if __name__ == "__main__":
