@@ -10,7 +10,7 @@
 
 **目录：** [快速开始](#快速开始) · [特性](#特性) · [安装](#安装) · [常见任务](#常见任务) ·
 [工作原理](#工作原理) · [安全边界](#安全边界) · [排错](#排错) · [已知限制](#已知限制) ·
-[开发](#开发) · [设计文档](#设计文档) · [贡献](#贡献)
+[开发](#开发) · [发布](#发布维护者) · [设计文档](#设计文档) · [贡献](#贡献)
 
 </div>
 
@@ -23,9 +23,8 @@ cskit 包含三个子命令：`fix` 从 `config.toml` 读取当前 Provider 与�
 ## 快速开始
 
 ```sh
-# 1. 克隆并安装（启动器写入 ~/.local/bin/cskit，指向当前 checkout）
-git clone https://github.com/Weiki886/cskit.git && cd cskit
-./install.sh
+# 1. 安装（三种方式见下方「安装」一节，任选其一）
+uv tool install cskit
 
 # 2. 确认安装，并只读列出侧边栏当前可见的会话
 cskit --version
@@ -62,11 +61,33 @@ Codex 数据。
 
 ## 安装
 
-要求：
+要求：Python 3.9 或更高版本；本机已有可读取的 Codex 配置与会话；使用 `clone`
+时 Codex CLI 在 `PATH` 中，或通过 `--codex-bin` 指定。
 
-- Python 3.9 或更高版本；
-- 本机已有可读取的 Codex 配置与会话；
-- 使用 `clone` 时，Codex CLI 可执行文件需要在 `PATH` 中，或通过 `--codex-bin` 指定。
+### 方式一：从 PyPI 安装（推荐）
+
+用 [uv](https://docs.astral.sh/uv/) 或 [pipx](https://pipx.pypa.io/) 把 cskit
+装进隔离环境，并自动在 `~/.local/bin` 创建 `cskit` 命令：
+
+```sh
+uv tool install cskit
+# 或
+pipx install cskit
+```
+
+升级用 `uv tool upgrade cskit`（pipx 对应 `pipx upgrade cskit`）。
+
+### 方式二：直接从 GitHub 安装
+
+不想等 PyPI 发版，或想跟踪最新代码时：
+
+```sh
+uv tool install git+https://github.com/Weiki886/cskit
+```
+
+### 方式三：克隆仓库 + 安装脚本
+
+需要开发、运行测试，或使用旧命令名兼容（`--with-shims`）时：
 
 ```sh
 git clone https://github.com/Weiki886/cskit.git
@@ -74,19 +95,17 @@ cd cskit
 ./install.sh
 ```
 
-安装脚本把启动器写到 `~/.local/bin/cskit`，指向当前 checkout；以后在仓库里 `git pull`
-即可更新代码，无需重新安装。安装目录可用 `CSKIT_BIN_DIR` 覆盖。
+安装脚本把启动器写到 `~/.local/bin/cskit`，指向当前 checkout；以后在仓库里
+`git pull` 即可更新。安装目录可用 `CSKIT_BIN_DIR` 覆盖。已有 `cskit`
+启动器时脚本默认拒绝覆盖，确认替换用 `./install.sh --force`。
 
-已有 `cskit` 启动器时，脚本默认拒绝覆盖；确认要替换时使用：
-
-```sh
-./install.sh --force
-```
+> 通过 PyPI / GitHub 安装的 cskit 是独立环境中的普通包；`install.sh` 的
+> `--with-shims` 只在方式三下生效。
 
 ### 兼容旧命令名
 
 默认安装不会触碰已有的 `fixcode`、`exportcode`、`clonecode`。需要让旧名字转到
-cskit 时运行：
+cskit 时（仅方式三）运行：
 
 ```sh
 ./install.sh --with-shims
@@ -260,6 +279,27 @@ python3 -m unittest discover -s tests
 ```
 
 测试包含 Python 3.9 语法兼容、仓库凭据与个人绝对路径扫描，以及 `fix` 测试沙箱化守卫。
+
+## 发布（维护者）
+
+PyPI 通过 OIDC Trusted Publisher 发布，GitHub 中不保存任何 PyPI token。
+
+一次性准备：
+
+1. 注册并登录 [pypi.org](https://pypi.org) 账号；
+2. 在 PyPI 为新项目 `cskit` 创建 **pending publisher**：
+   Owner `Weiki886`、Repository `cskit`、Workflow `publish.yml`、Environment `pypi`；
+3. 在 GitHub 仓库设置中创建受环境保护 `pypi`（可限制维护者审批）。
+
+发布新版本：更新 `pyproject.toml` 与 `cskit/__init__.py` 中的版本号，提交后
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+`.github/workflows/publish.yml` 会自动构建 wheel 与 sdist，经 OIDC 发布到 PyPI。
+首次发布后，方式一的安装命令即生效。
 
 ## 设计文档
 

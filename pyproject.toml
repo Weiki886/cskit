@@ -1,10 +1,36 @@
 [build-system]
 requires = ["setuptools>=64"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "cskit"
 version = "0.1.0"
-description = "Codex / CC Switch 运维工具集"
+description = "Codex / CC Switch 运维工具集：Provider 切换后的会话同步、对话导出与安全克隆"
+readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
+authors = [{name = "Weiki886"}]
+keywords = ["codex", "cc-switch", "openai", "cli"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS :: MacOS X",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/Weiki886/cskit"
+Repository = "https://github.com/Weiki886/cskit"
+Issues = "https://github.com/Weiki886/cskit/issues"
+
+[project.scripts]
+cskit = "cskit.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["cskit*"]

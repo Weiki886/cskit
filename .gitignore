@@ -3,3 +3,8 @@ __pycache__/
 !tests/fixtures/
 *.bak
 cskit-backups/
+
+# build artifacts
+*.egg-info/
+build/
+dist/
