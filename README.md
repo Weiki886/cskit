@@ -24,7 +24,7 @@ cskit 包含三个子命令：`fix` 从 `config.toml` 读取当前 Provider 与�
 
 ```sh
 # 1. 安装（三种方式见下方「安装」一节，任选其一）
-uv tool install cskit
+uv tool install cskit-cli
 
 # 2. 确认安装，并只读列出侧边栏当前可见的会话
 cskit --version
@@ -70,12 +70,13 @@ Codex 数据。
 装进隔离环境，并自动在 `~/.local/bin` 创建 `cskit` 命令：
 
 ```sh
-uv tool install cskit
+uv tool install cskit-cli
 # 或
-pipx install cskit
+pipx install cskit-cli
 ```
 
-升级用 `uv tool upgrade cskit`（pipx 对应 `pipx upgrade cskit`）。
+升级用 `uv tool upgrade cskit-cli`（pipx 对应 `pipx upgrade cskit-cli`）。
+PyPI 包名是 `cskit-cli`（`cskit` 与已有的 `cs-kit` 包归一化后同名，无法占用），安装后命令仍是 `cskit`。
 
 ### 方式二：直接从 GitHub 安装
 
@@ -287,7 +288,7 @@ PyPI 通过 OIDC Trusted Publisher 发布，GitHub 中不保存任何 PyPI token
 一次性准备：
 
 1. 注册并登录 [pypi.org](https://pypi.org) 账号；
-2. 在 PyPI 为新项目 `cskit` 创建 **pending publisher**：
+2. 在 PyPI 为新项目 `cskit-cli` 创建 **pending publisher**：
    Owner `Weiki886`、Repository `cskit`、Workflow `publish.yml`、Environment `pypi`；
 3. 在 GitHub 仓库设置中创建受环境保护 `pypi`（可限制维护者审批）。
 

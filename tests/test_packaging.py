@@ -48,7 +48,7 @@ class PyProjectMetadataTest(unittest.TestCase):
     def test_required_public_metadata(self):
         if self.data is not None:
             project = self.data["project"]
-            self.assertEqual(project["name"], "cskit")
+            self.assertEqual(project["name"], "cskit-cli")
             self.assertEqual(project["readme"], "README.md")
             self.assertEqual(project["requires-python"], ">=3.9")
             self.assertTrue(
@@ -125,7 +125,7 @@ class PublishWorkflowTest(unittest.TestCase):
 class ReadmeInstallTest(unittest.TestCase):
     def test_documents_both_install_paths(self):
         text = README.read_text()
-        self.assertIn("uv tool install cskit", text)
+        self.assertIn("uv tool install cskit-cli", text)
         self.assertIn("uv tool install git+https://github.com/Weiki886/cskit", text)
 
 

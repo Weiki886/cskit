@@ -3,7 +3,7 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cskit"
+name = "cskit-cli"
 version = "0.1.0"
 description = "Codex / CC Switch 运维工具集：Provider 切换后的会话同步、对话导出与安全克隆"
 readme = "README.md"
